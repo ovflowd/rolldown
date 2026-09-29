@@ -439,7 +439,9 @@ Notes:
   (or `HmrRebuild` under `Always`).
 - `Failed` discriminates on `last_error_stage`. An `Hmr`-stage failure
   recovers by re-running the same Hmr task (the `watch_change` hook and
-  HMR computation get a second chance). A `Rebuild`-stage failure left
+  HMR computation get a second chance). If the failed update had already
+  merged its edit into the graph, the task becomes a full build with a
+  full reload instead (§9b). A `Rebuild`-stage failure left
   the bundle output stale w.r.t. source, so the recovery task must
   include a rebuild — `HmrRebuild` regardless of `rebuild_strategy`.
   This realizes [design.md](./design.md) principle 3's corollary.
@@ -508,24 +510,44 @@ and `:231`).
 The engine never decides at run time that an update needs a full page
 reload: the HMR boundary decision lives in the browser (see
 [hmr/design.md](../hmr/design.md)), so an `Hmr` task stays `Hmr`
-whatever the HMR result is (`bundling_task.rs:200-203`). A patch-only
+whatever the HMR result is (`bundling_task.rs:204-214`). A patch-only
 task leaves `has_stale_bundle_output` set (§12); a client that reloads
 itself lands on the stale-access regeneration path (§13).
 
-### 9b. At run time (`bundling_task.rs:144-186`) — the tsconfig upgrade
+### 9b. At run time (`bundling_task.rs:144-202`) — the full-reload upgrade
 
-Before HMR generation, the bundling task checks whether any changed file
-is a known tsconfig. A tsconfig edit changes how every module it governs
-is transformed, which no patch or partial scan can express. The task
-then:
+Before HMR generation, the bundling task upgrades itself to a full build
+in two cases, which no patch or partial scan can express:
 
-1. clears the resolver cache and the transform tsconfig cache;
-2. sends `HmrUpdate::FullReload { reason: "tsconfig change" }` to every
-   connected client through `on_hmr_updates` — the only full reload the
-   engine itself originates;
-3. **rewrites its own input** to `TaskInput::FullBuild`
-   (`bundling_task.rs:186`), so the rebuild runs with `ScanMode::Full`
-   (§10) and HMR generation is skipped.
+- **A changed file is a known tsconfig.** A tsconfig edit changes how
+  every module it governs is transformed. The task first clears the
+  resolver cache and the transform tsconfig cache.
+- **An earlier HMR update was lost** (`Bundler::has_lost_hmr_update`, any
+  task kind). The update merged its edit into the graph and then failed,
+  for example while rendering the patch, so no client ran it. The next
+  patch would not re-run that edit: the graph already has it, so it no
+  longer counts as changed. A `FullBuild` task needs the reload too: the
+  full build that recovers from a failed full build gets no reload from
+  Vite unless one is pending. Sending the
+  lost update again would also have to carry the modules it added and
+  the imports it added, so the engine reloads instead. Such failures are
+  rare (a throwing plugin callback), so one reload is cheap. A failure
+  before the merge (a syntax error) is not lost: nothing merged, and
+  `pending_rescans` retries the file.
+
+In both cases the task then:
+
+1. sends `HmrUpdate::FullReload` with the reason (`"tsconfig change"` or
+   `"an earlier hot update failed"`) to every connected client through
+   `on_hmr_updates` — the only full reloads the engine itself
+   originates. A `FullBuild` task has no changed files, so its
+   `changedFiles` is `["*"]`: Vite ignores an update with an empty
+   `changedFiles`;
+2. **rewrites its own input** to `TaskInput::FullBuild`
+   (`bundling_task.rs:201`), so the rebuild runs with `ScanMode::Full`
+   (§10) and HMR generation is skipped. A successful full build clears
+   the lost-update flag (see
+   [bundler-data-lifecycle](../bundler-data-lifecycle/implementation.md)).
 
 Consequence: the `TaskInput` variant the coordinator queued is not
 necessarily the variant that runs. A coordinator-queued `Hmr` can become
@@ -614,19 +636,19 @@ Set sites:
 re-runs the hook against the new changed files — sufficient retry
 without forcing a rebuild.
 
-`run_inner` (`bundling_task.rs:122-210`) does, in order:
+`run_inner` (`bundling_task.rs:122-225`) does, in order:
 
 1. **`watchChange` plugin hook** — for each changed file, calls
    `plugin_driver.watch_change` on the last bundle handle.
-2. **tsconfig check** — the §9b upgrade: a changed tsconfig sends a
-   `FullReload` to every client and rewrites the input to `FullBuild`.
-   The same block clears the resolver cache per §9c.
+2. **Full-reload check** — the §9b upgrade: a changed tsconfig or a
+   lost HMR update sends a `FullReload` to every client and rewrites the
+   input to `FullBuild`. The same block clears the resolver cache per §9c.
 3. **HMR generation** — if `require_generate_hmr_update()`, calls
    `generate_hmr_updates`.
 4. **Rebuild** — if `requires_rebuild()`, sets `has_rebuild_happen =
 true` and calls `rebuild()`.
 
-### `generate_hmr_updates` (`bundling_task.rs:215-329`)
+### `generate_hmr_updates` (`bundling_task.rs:230-345`)
 
 - Locks the `Bundler`.
 - Snapshots `(client_id, shipped)` for every connected client from
@@ -639,9 +661,9 @@ true` and calls `rebuild()`.
   files, the client inputs, the stamp table, `next_hmr_patch_id`,
   `last_build_errored`, and `hot_update`.
   `last_build_errored` is `DevContext::last_task_errored`;
-  `hot_update` is the dev option (`bundling_task.rs:252-253`).
+  `hot_update` is the dev option (`bundling_task.rs:267-268`).
 - Assigns `patch.seq` from `session.next_seq` for every
-  `HmrUpdate::Patch` (`bundling_task.rs:267-271`). A `Noop` sends
+  `HmrUpdate::Patch` (`bundling_task.rs:281-291`). A `Noop` sends
   nothing, so it does not advance the counter; the client requires
   `seq === lastSeq + 1`, and a skipped number would read as a gap. A
   client that disconnected during the compute has no session, so its
@@ -650,7 +672,7 @@ true` and calls `rebuild()`.
   finds no client for it.
 - Records every `Patch` as a `PendingPayload` under `patch.filename`,
   moving `patch.carried` (the modules and stamps it ships) into the
-  entry (`bundling_task.rs:282-293`). `shipped[C]` is written only when
+  entry (`bundling_task.rs:297-312`). `shipped[C]` is written only when
   the client acknowledges delivery of that filename (§15,
   `notify_payload_delivered`).
 - On error, sets `self.hmr_errored = true`.
@@ -694,9 +716,11 @@ Then, across all files of the batch:
    build (recovery must reach clients stuck on the overlay), and
    modules a `hotUpdate` hook explicitly returned (the change may live
    outside the module's own code, so identical output proves nothing).
-6. **Refetch and stamp** — one partial scan and cache merge. Then the
-   stamp table starts a new rebuild number and stamps every changed or
-   newly added module with it (`hmr_stage.rs:371-377`).
+6. **Refetch and stamp** — one partial scan and cache merge. The
+   merge sets `Bundler::lost_hmr_update`, and the update clears it only
+   when it returns its patches (§9b). Then the stamp table starts a
+   new rebuild number and stamps every changed or newly added module
+   with it (`hmr_stage.rs:371-377`).
 7. **Superset walk** — `collect_client_update_superset`
    (`hmr_stage.rs:451`) walks up static and dynamic importers from the
    changed modules, stopping at self-accepting modules and at accepting
@@ -767,7 +791,7 @@ Known gaps in this walk, kept on purpose for now:
   rule. A tagged marker is possible later, but it must change on both
   sides in the same release.
 
-### `rebuild` (`bundling_task.rs:332-371`)
+### `rebuild` (`bundling_task.rs:348-388`)
 
 - Locks the `Bundler`.
 - Picks the scan mode:
@@ -783,7 +807,7 @@ Known gaps in this walk, kept on purpose for now:
 - On error, sets `self.rebuild_errored = true`.
 - On success, recomputes `DevContext::top_level_evaluated` from the new
   snapshot (`compute_top_level_evaluated_modules`,
-  `impl_bundler_hmr.rs:81`; call at `bundling_task.rs:361-365`). A
+  `impl_bundler_hmr.rs:81`; call at `bundling_task.rs:377-381`). A
   client that connects after this rebuild freezes this map into its
   session at hello.
 - Invokes the `on_output` callback if configured.

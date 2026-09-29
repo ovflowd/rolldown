@@ -17,6 +17,12 @@ pub struct Bundler {
   pub(super) bundle_factory: BundleFactory,
   #[cfg_attr(not(feature = "experimental"), allow(dead_code))]
   pub(super) cache: ScanStageCache,
+  /// An HMR update merged its edit into the module graph and then failed, so no client
+  /// received it. The dev engine reloads every client instead of sending the next update.
+  /// Outside `cache`, which a full scan drops even when it fails. Cleared after a successful
+  /// full build.
+  #[cfg_attr(not(feature = "experimental"), allow(dead_code))]
+  pub(super) lost_hmr_update: bool,
   pub(super) closed: bool,
 }
 
@@ -40,6 +46,7 @@ impl Bundler {
       bundle_factory,
       session: rolldown_devtools::Session::dummy(),
       cache: ScanStageCache::default(),
+      lost_hmr_update: false,
       closed: false,
     })
   }
