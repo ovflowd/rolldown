@@ -1,0 +1,52 @@
+---
+source: crates/rolldown_testing/src/integration_test.rs
+---
+# warnings
+
+## NAMESPACE_CONFLICT
+
+```text
+[NAMESPACE_CONFLICT] Conflicting namespaces: "main.js" re-exports "T" from one of the modules "a.js" and "b.js" (will be ignored).
+   ╭─[ a.js:1:10 ]
+   │
+ 1 │ export { A as T, S, U } from 'ext';
+   │          ┬  
+   │          ╰── One matching export is here.
+   │
+   ├─[ b.js:1:10 ]
+   │
+ 1 │ export { B as T, S } from 'ext';
+   │          ┬  
+   │          ╰── One matching export is here.
+───╯
+
+```
+
+## NAMESPACE_CONFLICT
+
+```text
+[NAMESPACE_CONFLICT] Conflicting namespaces: "main.js" re-exports "U" from one of the modules "a.js" and "b.js" (will be ignored).
+   ╭─[ a.js:1:21 ]
+   │
+ 1 │ export { A as T, S, U } from 'ext';
+   │                     ┬  
+   │                     ╰── One matching export is here.
+   │
+   ├─[ b.js:2:14 ]
+   │
+ 2 │ export const U = 1;
+   │              ┬  
+   │              ╰── One matching export is here.
+───╯
+
+```
+
+# Assets
+
+## main.js
+
+```js
+import { S } from "ext";
+export { S };
+
+```

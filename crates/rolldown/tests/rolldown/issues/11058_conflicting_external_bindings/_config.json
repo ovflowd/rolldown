@@ -1,0 +1,8 @@
+{
+  "_comment": "https://github.com/rolldown/rolldown/issues/11058. `T` resolves to two different bindings of the external `ext`, and `U` to a binding of `ext` in one module but a declaration in the other: both are ambiguous, so `main.js` drops them and warns. `S` reaches the same binding of `ext` twice and stays exported.",
+  "expectExecuted": false,
+  "expectWarning": true,
+  "config": {
+    "external": ["ext"]
+  }
+}
