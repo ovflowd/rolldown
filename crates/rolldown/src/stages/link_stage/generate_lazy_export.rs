@@ -315,15 +315,13 @@ fn json_object_expr_to_esm(link_staged: &mut LinkStage, module_idx: ModuleIdx) -
   true
 }
 
-/// Removes the wrapper that `wrap_modules` created for an ESM JSON module, for any JSON root.
-/// A JSON module declares only data, so no code can see a difference if it runs at load time.
-/// Call this function before the JSON transform. The transform of an object root replaces the
-/// statement infos. After that, the recorded index of the wrapper statement is not valid.
+/// Removes the wrapper that `wrap_modules` created for an ESM JSON module, for any JSON root. A
+/// JSON module declares only data, so no code can see a difference if it runs at load time. Call
+/// this function before the JSON transform, which can replace the statement infos.
 fn unwrap_json_module(link_staged: &mut LinkStage, module_idx: ModuleIdx) {
   let meta = &mut link_staged.metas[module_idx];
   if let Some(wrapper_stmt_idx) = meta.wrapper_stmt_info.take() {
-    // The wrapper statement has no AST node. An empty statement info has no symbols and no side
-    // effects, so tree shaking does not keep it.
+    // The wrapper statement has no AST node, so an empty statement info removes it.
     *link_staged.stmt_infos[module_idx].get_mut(wrapper_stmt_idx) = StmtInfo::default();
   }
   meta.wrapper_ref = None;
